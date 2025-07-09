@@ -51,7 +51,7 @@ unsigned long tiempoUltimoCambioReferencia = 0;
 Scheduler runner;
 
 Task taskControl(Ts * 1000, TASK_FOREVER, &funcionControl);
-Task taskSerial(500, TASK_FOREVER, &funcionSerial); // Cada 500 ms
+Task taskSerial(1, TASK_FOREVER, &funcionSerial); // Cada 500 ms
 
 // --------------------------------------------------------------------------------------
 // 5. Funciones
