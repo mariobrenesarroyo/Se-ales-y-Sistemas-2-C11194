@@ -1,138 +1,144 @@
-// --- INCLUDES DE LIBRERIAS ---
 #include <TaskScheduler.h>
 
-// --- DECLARACIONES DE FUNCIONES (Forward Declarations) ---
-// Es necesario declarar estas funciones antes de usarlas en la configuracion de Tasks
+// --------------------------------------------------------------------------------------
+// PROTOTIPOS DE FUNCIONES
+// Deben declararse aquí para que el compilador las conozca antes de ser usadas en 'Task'
+// --------------------------------------------------------------------------------------
 void funcionControl();
 void funcionSerial();
 
-// --- DEFINICION DE PINES ---
-// Asegurate que estos pines correspondan a tus conexiones fisicas
-const int PIN_SALIDA_PLANTA = A0;   // Pin analógico donde se conectará la salida de tu circuito (Vo)
-const int PIN_ENTRADA_PLANTA = 9;  // Pin PWM donde se conectará la entrada de tu circuito (Vs)
-// Nota: Puedes usar el pin A1 para un potenciómetro si lo necesitas como referencia manual,
-// pero el código ya incluye la referencia de onda cuadrada automática.
-const int PIN_POTENCIOMETRO = A1; // Pin para potencial, aunque no usado en la referencia de onda cuadrada
+// --------------------------------------------------------------------------------------
+// 0. Definiciones de Pines
+// --------------------------------------------------------------------------------------
+const int PIN_ENTRADA_PLANTA = 9;   // Pin PWM (Digital) para la entrada de la planta (Vs)
+const int PIN_SALIDA_PLANTA = A0;  // Pin Analógico para la salida de la planta (Vo)
+// const int PIN_POTENCIOMETRO = A1; // Pin Analógico para el potenciómetro (si se usa como referencia)
 
+// --------------------------------------------------------------------------------------
+// 1. Parámetros de la Referencia y del Sistema (Ajustar según necesidad)
+// --------------------------------------------------------------------------------------
+const float REFERENCIA_BAJA = 1.0;  // Voltaje de referencia bajo para la onda cuadrada (V)
+const float REFERENCIA_ALTA = 3.5;  // Voltaje de referencia alto para la onda cuadrada (V)
+const int PERIODO_ONDA_CUADRADA_MS = 6000; // Periodo total de la onda cuadrada en ms (6 segundos)
 
-// --- PARAMETROS DEL CONTROLADOR ---
-const float TS = 0.1; // Periodo de muestreo en segundos (0.1s)
+const float VOLTAJE_MAX_ENTRADA_ADC = 5.0; // Voltaje máximo que el ADC puede leer (5V para Arduino UNO)
+const int RESOLUCION_ADC = 1024;           // Resolución del ADC (2^10 = 1024 para 0-1023)
+const int RESOLUCION_PWM = 256;            // Resolución del PWM (2^8 = 256 para 0-255)
 
-// Coeficientes de tu controlador C(z) = (1.785z - 1.715)/(z - 1)
-const float K_C = 1.785;
-const float K_C_Z_1 = 1.715;
+// --------------------------------------------------------------------------------------
+// 2. Parámetros del Controlador PI (Estos deben venir de tu diseño)
+// --------------------------------------------------------------------------------------
+const float Kp = 1.785;   // Ganancia Proporcional
+const float Ki = 0.07;    // Ganancia Integral
+const float Ts = 0.1;     // Período de muestreo del controlador en segundos (100 ms)
 
-// --- VARIABLES DEL CONTROLADOR ---
-// Variables para almacenar los valores actuales y anteriores para la ecuación en diferencias
-float error_k = 0;   // Error actual e[k]
-float error_k_menos_1 = 0; // Error anterior e[k-1]
+// --------------------------------------------------------------------------------------
+// 3. Variables Globales para el Control
+// --------------------------------------------------------------------------------------
+float referencia_V = REFERENCIA_BAJA; // Valor de referencia actual en Voltios
+float salida_planta_V = 0.0;          // Salida medida de la planta en Voltios
+float error_k = 0.0;                  // Error actual
+float u_k = 0.0;                      // Señal de control calculada en Voltios (antes de saturación)
+float u_k_saturado = 0.0;             // Señal de control saturada (0-5V)
+float e_integral = 0.0;               // Suma integral del error
 
-float u_k = 0;       // Señal de control actual u[k] (en Volts)
-float u_k_menos_1 = 0; // Señal de control anterior u[k-1] (en Volts)
+// Variables para la lógica de la onda cuadrada
+bool estadoOndaCuadrada = false; // true = REFERENCIA_ALTA, false = REFERENCIA_BAJA
+unsigned long tiempoUltimoCambioReferencia = 0;
 
-float referencia_V = 0; // Valor de la referencia en Volts (ej. 1V a 3.5V)
-float salida_planta_V = 0; // Valor de la salida de la planta en Volts
-
-// --- VARIABLES PARA LA REFERENCIA CUADRADA AUTOMATICA ---
-const unsigned long PERIODO_ONDA_CUADRADA_MS = 6000; // 6 segundos en milisegundos
-const float REFERENCIA_ALTA = 3.5; // Volts
-const float REFERENCIA_BAJA = 1.0; // Volts
-bool estadoOndaCuadrada = false; // false para baja (1V), true para alta (3.5V)
-
-// Contador de ejecuciones de la tarea de control para la onda cuadrada
-int control_execution_counter = 0;
-const int PASOS_POR_MITAD_PERIODO = (PERIODO_ONDA_CUADRADA_MS / 2) / (TS * 1000);
-
-
-// --- CONFIGURACION DE TASKSCHEDULER ---
+// --------------------------------------------------------------------------------------
+// 4. Variables para TaskScheduler
+// --------------------------------------------------------------------------------------
 Scheduler runner;
 
-// Tarea para la lógica de control principal, se ejecuta cada TS (0.1s)
-Task controlTask(TS * 1000, TASK_FOREVER, &funcionControl);
+// Tareas:
+// - Control: Ejecuta el algoritmo de control en cada período de muestreo (Ts)
+// - Serial: Envía datos al Monitor/Plotter Serial a una frecuencia menor
+Task taskControl(Ts * 1000, TASK_FOREVER, &funcionControl); // Ts en ms
+Task taskSerial(500, TASK_FOREVER, &funcionSerial); // Cada 500 ms (2 veces por segundo)
 
-// Tarea para enviar datos por serial, se ejecuta cada 500ms (2 veces por segundo)
-const unsigned long INTERVALO_SERIAL_MS = 500;
-Task serialTask(INTERVALO_SERIAL_MS, TASK_FOREVER, &funcionSerial);
+// --------------------------------------------------------------------------------------
+// 5. Funciones
+// --------------------------------------------------------------------------------------
 
+void funcionControl() {
+  // 1. Manejo de la Referencia (Onda Cuadrada Automática)
+  // Actualizar la referencia cada mitad de período de la onda cuadrada
+  if (millis() - tiempoUltimoCambioReferencia >= (PERIODO_ONDA_CUADRADA_MS / 2)) {
+    estadoOndaCuadrada = !estadoOndaCuadrada; // Cambiar estado
+    referencia_V = estadoOndaCuadrada ? REFERENCIA_ALTA : REFERENCIA_BAJA;
+    tiempoUltimoCambioReferencia = millis(); // Reiniciar el contador de tiempo
+  }
+  
+  /*
+  // Si deseas usar un potenciómetro como referencia (descomenta y comenta lo anterior):
+  // int lecturaPotenciometro = analogRead(PIN_POTENCIOMETRO);
+  // float voltajePotenciometro = lecturaPotenciometro * (VOLTAJE_MAX_ENTRADA_ADC / (RESOLUCION_ADC -1.0));
+  // referencia_V = constrain(voltajePotenciometro, REFERENCIA_BAJA, REFERENCIA_ALTA); // Asegura que esté entre 1V y 3.5V
+  */
+
+  // 2. Leer la Salida de la Planta
+  int lectura_ADC = analogRead(PIN_SALIDA_PLANTA);
+  // Convertir la lectura ADC (0-1023) a Voltios (0-5V)
+  salida_planta_V = lectura_ADC * (VOLTAJE_MAX_ENTRADA_ADC / (RESOLUCION_ADC - 1.0));
+
+  // 3. Calcular el Error
+  error_k = referencia_V - salida_planta_V;
+
+  // 4. Calcular el Control (Controlador PI Discreto - Forma de Posición)
+  // Termino Proporcional
+  float u_p = Kp * error_k;
+
+  // Termino Integral
+  // Suma los errores para la integración
+  e_integral += error_k; 
+  float u_i = Ki * Ts * e_integral; // Multiplicar por Ts para la aproximación rectangular (suma) de la integral
+
+  u_k = u_p + u_i; // Señal de control antes de saturación
+
+  // 5. Saturar la Señal de Control (0V a 5V)
+  u_k_saturado = constrain(u_k, 0.0, 5.0);
+
+  // 6. Escribir la Señal de Control en el PWM de la Planta
+  // Convertir el voltaje saturado (0-5V) a un valor PWM (0-255)
+  int valor_PWM = u_k_saturado * ((RESOLUCION_PWM - 1.0) / VOLTAJE_MAX_ENTRADA_ADC);
+  analogWrite(PIN_ENTRADA_PLANTA, valor_PWM);
+}
+
+void funcionSerial() {
+  // Imprimir los valores de Referencia, Salida y Control para el Serial Plotter
+  // Separados por tabulaciones para que el plotter los interprete como columnas diferentes
+  Serial.print(referencia_V, 3); // 3 decimales
+  Serial.print("\t");            // Tabulación
+  Serial.print(salida_planta_V, 3); // 3 decimales
+  Serial.print("\t");            // Tabulación
+  Serial.println(u_k_saturado, 3); // 3 decimales y salto de línea al final
+}
+
+// --------------------------------------------------------------------------------------
+// 6. Setup y Loop del Arduino
+// --------------------------------------------------------------------------------------
 
 void setup() {
-  // Configuración de pines de E/S
-  pinMode(PIN_ENTRADA_PLANTA, OUTPUT); // Pin PWM para la señal de control (Vs)
-  pinMode(PIN_SALIDA_PLANTA, INPUT);   // Pin analógico para la salida de la planta (Vo)
-  pinMode(PIN_POTENCIOMETRO, INPUT);   // Pin analógico para el potenciómetro (si se usa)
-
-  // Inicializar comunicación serial a una velocidad alta para mejor monitoreo
+  // Inicializar comunicación Serial
   Serial.begin(115200);
-  Serial.println("Arduino listo para control!");
 
-  // Inicializar variables anteriores del controlador
-  // Es importante que esten en 0 al inicio para evitar valores indeseados
-  error_k_menos_1 = 0;
-  u_k_menos_1 = 0;
+  // Configurar pines
+  pinMode(PIN_ENTRADA_PLANTA, OUTPUT); // Pin PWM como salida
+  pinMode(PIN_SALIDA_PLANTA, INPUT);   // Pin Analógico como entrada
 
-  // Establecer el estado inicial de la onda cuadrada a REFERENCIA_BAJA
-  estadoOndaCuadrada = false; // Inicia en 1V
-  referencia_V = REFERENCIA_BAJA;
+  // Añadir tareas al planificador
+  runner.addTask(taskControl);
+  runner.addTask(taskSerial);
 
-  // Añadir tareas al planificador y habilitarlas
-  runner.addTask(controlTask);
-  runner.addTask(serialTask);
-  controlTask.enable();
-  serialTask.enable();
+  // Habilitar tareas
+  taskControl.enable();
+  taskSerial.enable();
+
+  tiempoUltimoCambioReferencia = millis(); // Inicializar el contador de tiempo para la referencia
 }
 
 void loop() {
-  // Ejecutar las tareas programadas por TaskScheduler
-  runner.execute();
-}
-
-// --- FUNCIONES DE LAS TAREAS ---
-
-// Función que contiene la lógica principal del controlador
-void funcionControl() {
-  // 1. Manejo de la Referencia (Onda Cuadrada Automática)
-  control_execution_counter++;
-  if (control_execution_counter >= PASOS_POR_MITAD_PERIODO) {
-    estadoOndaCuadrada = !estadoOndaCuadrada; // Cambiar estado
-    control_execution_counter = 0; // Reiniciar contador
-  }
-  referencia_V = estadoOndaCuadrada ? REFERENCIA_ALTA : REFERENCIA_BAJA;
-
-
-  // 2. Leer Salida de la Planta (Vo)
-  int lectura_planta_ADC = analogRead(PIN_SALIDA_PLANTA);
-  // Escalar la lectura ADC (0-1023) a Volts (0-5V)
-  salida_planta_V = lectura_planta_ADC * (5.0 / 1023.0); // IMPORTANTE: Asume Arduino trabajando a 5V!
-
-  // 3. Calcular Error e[k]
-  error_k = referencia_V - salida_planta_V;
-
-  // 4. Implementar Ecuación en Diferencias del Controlador C(z)
-  // u[k] = u[k-1] + 1.785 * e[k] - 1.715 * e[k-1]
-  u_k = u_k_menos_1 + (K_C * error_k) - (K_C_Z_1 * error_k_menos_1);
-
-  // 5. Saturar la Señal de Control (0V a 5V)
-  u_k = constrain(u_k, 0.0, 5.0); // Asegura que u_k esté entre 0 y 5 Volts
-
-  // 6. Mapear u[k] (Volts) a un valor PWM (0-255) y Enviar a la Planta (Vs)
-  // Multiplicamos por 100 para trabajar con más precisión con 'map' que no maneja floats.
-  // Luego map(0-500, 0, 255) convierte 0.0V-5.0V a 0-255.
-  int u_k_PWM = map(static_cast<int>(u_k * 100), 0, 500, 0, 255);
-  analogWrite(PIN_ENTRADA_PLANTA, u_k_PWM);
-
-  // 7. Actualizar Variables Anteriores para la proxima iteracion
-  u_k_menos_1 = u_k;
-  error_k_menos_1 = error_k;
-}
-
-// Función para enviar datos por el puerto serial
-void funcionSerial() {
-  // Enviar los valores en Volts
-  Serial.print("Ref: ");
-  Serial.print(referencia_V, 3); // Imprimir con 3 decimales
-  Serial.print("V, Salida: ");
-  Serial.print(salida_planta_V, 3);
-  Serial.print("V, Control: ");
-  Serial.print(u_k, 3);
-  Serial.println("V");
+  // Ejecutar las tareas planificadas
+  runner.execute(); // <--- por esta
 }
