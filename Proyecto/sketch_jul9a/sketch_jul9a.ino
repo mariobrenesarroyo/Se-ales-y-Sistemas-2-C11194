@@ -125,7 +125,7 @@ void loop() {
   // Leer cambios desde el Monitor Serial
   if (Serial.available()) {
     char c = Serial.read();
-    if (c == 's' || c == 'S') {
+    if (c == 'C' || c == 'c') {
       modo_manual = !modo_manual;
       if (modo_manual) {
         Serial.println("Cambiado a MODO: Potenciómetro");
