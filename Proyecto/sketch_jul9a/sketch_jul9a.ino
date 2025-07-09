@@ -28,8 +28,8 @@ const int RESOLUCION_PWM = 256;            // Resolución del PWM (2^8 = 256 par
 // --------------------------------------------------------------------------------------
 // 2. Parámetros del Controlador PI (Estos deben venir de tu diseño)
 // --------------------------------------------------------------------------------------
-const float Kp = 1.785;   // Ganancia Proporcional
-const float Ki = 0.07;    // Ganancia Integral
+const float Kp = 1.785;   // Ganancia Proporcional (Ejemplo, usar tus valores de diseño)
+const float Ki = 0.7;    // Ganancia Integral (Ejemplo, usar tus valores de diseño)
 const float Ts = 0.1;     // Período de muestreo del controlador en segundos (100 ms)
 
 // --------------------------------------------------------------------------------------
@@ -55,7 +55,7 @@ Scheduler runner;
 // - Control: Ejecuta el algoritmo de control en cada período de muestreo (Ts)
 // - Serial: Envía datos al Monitor/Plotter Serial a una frecuencia menor
 Task taskControl(Ts * 1000, TASK_FOREVER, &funcionControl); // Ts en ms
-Task taskSerial(500, TASK_FOREVER, &funcionSerial); // Cada 500 ms (2 veces por segundo)
+Task taskSerial(1, TASK_FOREVER, &funcionSerial); // Cada 500 ms (2 veces por segundo)
 
 // --------------------------------------------------------------------------------------
 // 5. Funciones
@@ -78,7 +78,7 @@ void funcionControl() {
   */
 
   // 2. Leer la Salida de la Planta
-  int lectura_ADC = analogRead(PIN_SALIDA_PLANTA);
+  int lectura_ADC = analogRead(PIN_SALIDA_PLANTA); // v_o se conecta a una entrada analógica
   // Convertir la lectura ADC (0-1023) a Voltios (0-5V)
   salida_planta_V = lectura_ADC * (VOLTAJE_MAX_ENTRADA_ADC / (RESOLUCION_ADC - 1.0));
 
@@ -140,5 +140,5 @@ void setup() {
 
 void loop() {
   // Ejecutar las tareas planificadas
-  runner.execute(); // <--- por esta
+  runner.execute(); // Usamos execute() para compatibilidad con tu librería TaskScheduler
 }
